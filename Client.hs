@@ -5,6 +5,8 @@ import Control.Concurrent
 import Control.Exception
 import System.IO
 import System.Process
+import Data.Bool
+import Data.Either
 
 import Network.Socket
 
@@ -33,43 +35,41 @@ start (sock, addr, hdl) = do
     buff <- newMVar [] :: IO (MVar [Char])
     chat <- newMVar [] :: IO (MVar [Char])
 
-    tidInterface <- forkIO $ interface chat buff
-    tidTalker    <- forkIO $ talker chat buff (sock, addr, hdl)
+    tidTalker <- forkIO $ talker chat buff (sock, addr, hdl)
 
-    reader chat hdl
-    killThread tidTalker
-    hClose hdl
-    close  sock
-    killThread tidInterface
+    reader chat buff hdl >> killThread tidTalker >> hClose hdl >> close sock 
     putStrLn "The server is closed!"
 
 interface :: MVar [Char] -> MVar [Char] -> IO ()
 interface chat buff = do
     chat' <- readMVar chat
     buff' <- readMVar buff
-    system "clear" >> putStr (chat' ++ buff') >> threadDelay 200000 
-    interface  chat buff
+    system "clear" >> putStr (chat' ++ buff') 
 
-reader :: MVar [Char] -> Handle -> IO ()
-reader chat hdl = do 
+reader :: MVar [Char] -> MVar [Char] -> Handle -> IO ()
+reader chat buff hdl = do 
     result <- try (hGetLine hdl) :: IO (Either IOException String)
     case result of
         Left  _   -> return ()
-        Right msg -> modifyMVar_ chat (evaluate . (++ (msg ++ "\n"))) >> reader chat hdl
+        Right msg -> do
+            modifyMVar_ chat (evaluate . (++ (msg ++ "\n"))) >> interface chat buff
+            reader chat buff hdl
 
 talker :: MVar [Char] -> MVar [Char] -> DBMS.Host -> IO ()
 talker chat buff (sock, addr, hdl) = do
-    let prefix = (++) (show addr) ": "
-    msg    <- return . (++) prefix =<< writer buff 
+    msg    <- return . (++) (show addr ++ ": ") =<< writer chat buff 
     result <- try (hPutStrLn hdl msg) :: IO (Either IOException ())
-    case result of
-        Left  _ -> return ()
-        Right _ -> talker chat buff (sock, addr, hdl)
+    if isLeft result then return () else talker chat buff (sock, addr, hdl)
 
-writer :: MVar [Char] -> IO [Char]
-writer buff = do
+writer :: MVar [Char] -> MVar [Char] -> IO [Char]
+writer chat buff = do
     input <- getChar
+    if input == '\n' then swapMVar buff [] 
+        else do eval buff input >> interface chat buff >> writer chat buff
+
+eval :: MVar [Char] -> Char -> IO ()
+eval buff input = do
     case input of
-        '\n' -> swapMVar buff []
-        _    -> modifyMVar_ buff (evaluate . (++ [input])) >> writer buff
+        '\DEL' -> do modifyMVar_ buff (evaluate . (\x -> bool (init x) [] $ null x)) 
+        _      -> do modifyMVar_ buff (evaluate . (++ [input])) 
 
