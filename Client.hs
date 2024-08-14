@@ -50,25 +50,30 @@ reader :: MVar [Char] -> MVar [Char] -> Handle -> IO ()
 reader chat buff hdl = do 
     result <- try (hGetLine hdl) :: IO (Either IOException String)
     case result of
-        Left  _   -> return ()
         Right msg -> do
-            modifyMVar_ chat (evaluate . (++ (msg ++ "\n"))) >> interface chat buff
-            reader chat buff hdl
+            modifyMVar_ chat (evaluate . (++ (msg ++ "\n"))) 
+            interface chat buff >> reader chat buff hdl
+        Left  _   -> return ()
+
+sender :: Handle -> [Char] -> IO (Either IOException ())
+sender hdl = try . hPutStrLn hdl 
 
 talker :: MVar [Char] -> MVar [Char] -> DBMS.Host -> IO ()
 talker chat buff (sock, addr, hdl) = do
-    msg    <- return . (++) (show addr ++ ": ") =<< writer chat buff 
-    result <- try (hPutStrLn hdl msg) :: IO (Either IOException ())
-    if isLeft result then return () else talker chat buff (sock, addr, hdl)
+    res <- sender hdl . (++) (show addr ++ ": ") =<< writer chat buff
+    if isRight res
+        then talker chat buff (sock, addr, hdl)
+        else return ()
 
 writer :: MVar [Char] -> MVar [Char] -> IO [Char]
 writer chat buff = do
     input <- getChar
-    if input == '\n' then swapMVar buff [] 
-        else do eval buff input >> interface chat buff >> writer chat buff
+    if (not . (==) '\n') input 
+        then manage buff input >> interface chat buff >> writer chat buff
+        else swapMVar buff []
 
-eval :: MVar [Char] -> Char -> IO ()
-eval buff input = do
+manage :: MVar [Char] -> Char -> IO ()
+manage buff input = do
     case input of
         '\DEL' -> do modifyMVar_ buff (evaluate . (\x -> bool (init x) [] $ null x)) 
         _      -> do modifyMVar_ buff (evaluate . (++ [input])) 
